@@ -1,0 +1,232 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: #0a0a0f;
+    color: #e2e8f0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #0f0f1a;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #3b82f6;
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #8b5cf6;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl;
+  }
+
+  .gradient-text {
+    @apply bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent;
+  }
+
+  .btn-primary {
+    @apply bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500
+           text-white font-semibold py-2.5 px-6 rounded-xl transition-all duration-300
+           shadow-lg hover:shadow-blue-500/25 active:scale-95;
+  }
+
+  .btn-secondary {
+    @apply bg-white/10 hover:bg-white/20 border border-white/20 hover:border-white/30
+           text-white font-medium py-2.5 px-6 rounded-xl transition-all duration-300
+           active:scale-95;
+  }
+
+  .input-field {
+    @apply w-full bg-white/5 border border-white/10 hover:border-white/20 focus:border-blue-500/60
+           text-white placeholder-gray-500 rounded-xl px-4 py-3 outline-none transition-all duration-300
+           focus:shadow-lg focus:shadow-blue-500/10;
+  }
+
+  .nav-item {
+    @apply flex items-center gap-3 px-4 py-3 rounded-xl text-gray-400 hover:text-white
+           hover:bg-white/10 transition-all duration-200 cursor-pointer font-medium;
+  }
+
+  .nav-item.active {
+    @apply bg-gradient-to-r from-blue-600/30 to-purple-600/30 text-white border border-blue-500/30;
+  }
+
+  .stat-card {
+    @apply glass-card p-6 hover:border-white/20 transition-all duration-300 cursor-default;
+  }
+
+  .webcam-container {
+    @apply relative overflow-hidden rounded-2xl bg-black/50 border border-white/10;
+  }
+
+  .status-badge {
+    @apply inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold;
+  }
+
+  .status-recognized {
+    @apply status-badge bg-green-500/20 text-green-400 border border-green-500/30;
+  }
+
+  .status-unknown {
+    @apply status-badge bg-red-500/20 text-red-400 border border-red-500/30;
+  }
+
+  .status-processing {
+    @apply status-badge bg-yellow-500/20 text-yellow-400 border border-yellow-500/30;
+  }
+
+  .table-row {
+    @apply border-b border-white/5 hover:bg-white/5 transition-colors duration-150;
+  }
+
+  .table-header {
+    @apply text-gray-400 text-sm font-semibold uppercase tracking-wider py-3 px-4 text-left;
+  }
+
+  .table-cell {
+    @apply py-3 px-4 text-sm text-gray-300;
+  }
+}
+
+@layer utilities {
+  .animate-glow-blue {
+    animation: glowBlue 2s ease-in-out infinite alternate;
+  }
+
+  .animate-glow-purple {
+    animation: glowPurple 2s ease-in-out infinite alternate;
+  }
+
+  .text-shadow-glow {
+    text-shadow: 0 0 20px rgba(59, 130, 246, 0.6);
+  }
+}
+
+@keyframes glowBlue {
+  from { box-shadow: 0 0 5px rgba(59, 130, 246, 0.2); }
+  to   { box-shadow: 0 0 25px rgba(59, 130, 246, 0.6), 0 0 50px rgba(59, 130, 246, 0.2); }
+}
+
+@keyframes glowPurple {
+  from { box-shadow: 0 0 5px rgba(139, 92, 246, 0.2); }
+  to   { box-shadow: 0 0 25px rgba(139, 92, 246, 0.6), 0 0 50px rgba(139, 92, 246, 0.2); }
+}
+
+@keyframes scanline {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+.scanline-effect::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.8), transparent);
+  animation: scanline 3s linear infinite;
+  pointer-events: none;
+}
+
+/* Face detection box styling */
+.face-box {
+  position: absolute;
+  border: 2px solid #3b82f6;
+  border-radius: 4px;
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.5), inset 0 0 10px rgba(59, 130, 246, 0.1);
+}
+
+/* Loading spinner */
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(59, 130, 246, 0.2);
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Pulse ring animation */
+.pulse-ring {
+  animation: pulseRing 1.5s ease-out infinite;
+}
+
+@keyframes pulseRing {
+  0%   { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(2); opacity: 0; }
+}
+
+/* Neon border effect */
+.neon-border-blue {
+  border: 1px solid rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.2), inset 0 0 10px rgba(59, 130, 246, 0.05);
+}
+
+.neon-border-purple {
+  border: 1px solid rgba(139, 92, 246, 0.5);
+  box-shadow: 0 0 10px rgba(139, 92, 246, 0.2), inset 0 0 10px rgba(139, 92, 246, 0.05);
+}
+
+/* Video overlay canvas */
+canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* Safe area for mobile bottom nav (notched phones) */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Make touch targets comfortably large on mobile */
+@media (max-width: 640px) {
+  .btn-primary, .btn-secondary {
+    @apply py-3 px-4 text-sm;
+  }
+  .input-field {
+    @apply py-3.5;
+  }
+  /* Tighter glass cards on mobile */
+  .glass-card {
+    @apply rounded-xl;
+  }
+  /* Stat cards compact */
+  .stat-card {
+    @apply p-4;
+  }
+}
+
+/* 100dvh fallback for mobile browsers with address bar */
+@supports (height: 100dvh) {
+  .h-dvh { height: 100dvh; }
+}
