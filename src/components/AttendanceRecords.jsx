@@ -3,12 +3,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   ClipboardList, Search, Download, Trash2,
   Calendar, Filter, ChevronUp, ChevronDown, Clock,
-  Users, CheckCircle, RefreshCw, X, ArrowLeft,
+  Users, CheckCircle, RefreshCw, X, ArrowLeft, UserX,
 } from 'lucide-react';
 import {
   getAttendanceRecords, deleteAttendanceRecord,
-  clearAttendanceRecords, exportToCSV,
+  clearAttendanceRecords, exportToCSV, autoMarkAbsents,
 } from '../utils/storageUtils';
+import { kagzsoSpeak } from './KagzsoChat';
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -39,7 +40,7 @@ const SortIcon = ({ col, sortKey, dir }) => {
 };
 
 // ─── Confirm Modal ────────────────────────────────────────────────────────────
-const ConfirmModal = ({ message, onConfirm, onCancel }) => (
+const ConfirmModal = ({ title, message, confirmLabel = 'Confirm', confirmClass = 'bg-red-600 hover:bg-red-500', iconEl, onConfirm, onCancel }) => (
   <motion.div
     initial={{ opacity: 0 }}
     animate={{ opacity: 1 }}
@@ -53,11 +54,9 @@ const ConfirmModal = ({ message, onConfirm, onCancel }) => (
       className="glass-card p-6 max-w-sm w-full space-y-4"
     >
       <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center flex-shrink-0">
-          <Trash2 size={18} className="text-red-400" />
-        </div>
+        {iconEl}
         <div>
-          <p className="text-white font-semibold">Confirm Delete</p>
+          <p className="text-white font-semibold">{title}</p>
           <p className="text-gray-400 text-sm mt-1">{message}</p>
         </div>
       </div>
@@ -65,9 +64,9 @@ const ConfirmModal = ({ message, onConfirm, onCancel }) => (
         <button onClick={onCancel} className="btn-secondary flex-1">Cancel</button>
         <button
           onClick={onConfirm}
-          className="flex-1 py-2.5 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white font-semibold transition-colors"
+          className={`flex-1 py-2.5 px-4 rounded-xl text-white font-semibold transition-colors ${confirmClass}`}
         >
-          Delete
+          {confirmLabel}
         </button>
       </div>
     </motion.div>
@@ -84,9 +83,12 @@ const AttendanceRecords = ({ onNavigate }) => {
   const [sortDir, setSortDir] = useState('desc');
   const [confirmModal, setConfirmModal] = useState(null); // { type, id? }
   const [currentPage, setCurrentPage] = useState(1);
+  const [markingAbsent, setMarkingAbsent] = useState(false);
   const PAGE_SIZE = 15;
 
-  const refresh = () => setRecords(getAttendanceRecords());
+  const refresh = async () => setRecords(await getAttendanceRecords());
+
+  const handleMarkAllAbsent = () => setConfirmModal({ type: 'absent' });
 
   useEffect(() => { refresh(); }, []);
 
@@ -147,24 +149,53 @@ const AttendanceRecords = ({ onNavigate }) => {
     setConfirmModal({ type: 'all' });
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (confirmModal.type === 'single') {
-      deleteAttendanceRecord(confirmModal.id);
+      await deleteAttendanceRecord(confirmModal.id);
+      kagzsoSpeak('Attendance record has been deleted.');
+    } else if (confirmModal.type === 'absent') {
+      setMarkingAbsent(true);
+      try {
+        const count = await autoMarkAbsents();
+        if (count > 0) {
+          kagzsoSpeak(`${count} employee${count > 1 ? 's' : ''} marked absent for today.`);
+        } else {
+          kagzsoSpeak('All registered employees already have attendance for today.');
+        }
+        await refresh();
+      } finally {
+        setMarkingAbsent(false);
+      }
     } else {
-      clearAttendanceRecords();
+      await clearAttendanceRecords();
+      kagzsoSpeak('All attendance records have been cleared.');
     }
-    refresh();
     setConfirmModal(null);
   };
 
   const handleExport = () => {
     const dateStr = filterDate || today;
     exportToCSV(filtered, `attendance_${dateStr}.csv`);
+    kagzsoSpeak(`Exported ${filtered.length} attendance records to CSV file.`);
   };
 
   // Stats
-  const todayCount = useMemo(() => records.filter(r => r.date === today).length, [records]);
+  const todayCount  = useMemo(() => records.filter(r => r.date === today && (r.status === 'present' || r.status === 'late')).length, [records, today]);
+  const lateCount   = useMemo(() => records.filter(r => r.date === today && r.status === 'late').length, [records, today]);
+  const absentCount = useMemo(() => records.filter(r => r.date === today && r.status === 'absent').length, [records, today]);
   const uniquePeople = useMemo(() => new Set(records.map(r => r.userId)).size, [records]);
+
+  // Per-employee absence summary
+  const employeeAbsents = useMemo(() => {
+    const map = {};
+    records.forEach(r => {
+      if (!map[r.userId]) map[r.userId] = { name: r.name, department: r.department, absent: 0, late: 0, present: 0 };
+      if (r.status === 'absent') map[r.userId].absent++;
+      else if (r.status === 'late') map[r.userId].late++;
+      else map[r.userId].present++;
+    });
+    return Object.values(map).filter(e => e.absent > 0 || e.late > 0).sort((a, b) => b.absent - a.absent);
+  }, [records]);
 
   // Reset page on filter change
   useEffect(() => { setCurrentPage(1); }, [search, filterDate, filterDept]);
@@ -226,6 +257,19 @@ const AttendanceRecords = ({ onNavigate }) => {
             <Download size={15} />
             Export CSV
           </motion.button>
+          <motion.button
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
+            onClick={handleMarkAllAbsent}
+            disabled={markingAbsent}
+            title="Mark all employees without attendance today as Absent"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-orange-500/15 hover:bg-orange-500/25 border border-orange-500/25 text-orange-400 text-sm font-medium transition-all disabled:opacity-50"
+          >
+            {markingAbsent
+              ? <><RefreshCw size={15} className="animate-spin" /> Marking…</>
+              : <><UserX size={15} /> Mark Absent</>
+            }
+          </motion.button>
           {records.length > 0 && (
             <motion.button
               whileHover={{ scale: 1.03 }}
@@ -244,6 +288,8 @@ const AttendanceRecords = ({ onNavigate }) => {
       <motion.div variants={itemVariants} className="flex flex-wrap gap-3">
         <StatPill icon={ClipboardList} label="Total Records" value={records.length} color="text-blue-400" />
         <StatPill icon={CheckCircle} label="Present Today" value={todayCount} color="text-green-400" />
+        <StatPill icon={Clock} label="Late Today" value={lateCount} color="text-amber-400" />
+        <StatPill icon={Users} label="Absent Today" value={absentCount} color="text-red-400" />
         <StatPill icon={Users} label="Unique People" value={uniquePeople} color="text-purple-400" />
         <StatPill icon={Filter} label="Filtered" value={filtered.length} color="text-cyan-400" />
       </motion.div>
@@ -349,10 +395,33 @@ const AttendanceRecords = ({ onNavigate }) => {
                         </td>
                         <td className="table-cell font-mono text-xs">{record.time}</td>
                         <td className="table-cell">
-                          <span className="status-recognized">
-                            <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                            {record.status || 'Present'}
-                          </span>
+                          <div className="flex flex-col gap-1">
+                            {/* Punch type badge */}
+                            <span className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold w-fit ${
+                              record.punchType === 'out'
+                                ? 'bg-purple-500/15 text-purple-300 border border-purple-500/25'
+                                : 'bg-green-500/15 text-green-300 border border-green-500/25'
+                            }`}>
+                              {record.punchType === 'out' ? '↑ OUT' : '↓ IN'}
+                            </span>
+                            {/* Status badge */}
+                            {record.status === 'absent' ? (
+                              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-500/15 text-red-400 border border-red-500/25 w-fit">
+                                <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                                Absent
+                              </span>
+                            ) : record.status === 'late' ? (
+                              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/15 text-amber-400 border border-amber-500/25 w-fit">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                Late
+                              </span>
+                            ) : (
+                              <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-teal-500/15 text-teal-400 border border-teal-500/25 w-fit">
+                                <span className="w-1.5 h-1.5 rounded-full bg-teal-400" />
+                                Present
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="table-cell text-right">
                           <button onClick={() => handleDelete(record.id)} className="w-7 h-7 rounded-lg bg-red-500/15 hover:bg-red-500/30 flex items-center justify-center text-red-400 ml-auto">
@@ -376,7 +445,7 @@ const AttendanceRecords = ({ onNavigate }) => {
               <p className="text-gray-500 text-sm">No records found</p>
             </div>
           ) : (
-            paginated.map((record, i) => (
+            paginated.map((record) => (
               <motion.div key={record.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}
                 className="glass-card p-4 space-y-3"
               >
@@ -405,9 +474,26 @@ const AttendanceRecords = ({ onNavigate }) => {
                       {record.time}
                     </div>
                   </div>
-                  <span className="status-recognized !text-[10px] !px-2 !py-0.5">
-                    Present
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                      record.punchType === 'out'
+                        ? 'bg-purple-500/15 text-purple-300 border border-purple-500/25'
+                        : 'bg-green-500/15 text-green-300 border border-green-500/25'
+                    }`}>
+                      {record.punchType === 'out' ? '↑ OUT' : '↓ IN'}
+                    </span>
+                    {record.status === 'absent' ? (
+                      <span className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-medium bg-red-500/15 text-red-400 border border-red-500/25">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-400" /> Absent
+                      </span>
+                    ) : record.status === 'late' ? (
+                      <span className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-medium bg-amber-500/15 text-amber-400 border border-amber-500/25">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> Late
+                      </span>
+                    ) : (
+                      <span className="status-recognized !text-[10px] !px-2 !py-0.5">Present</span>
+                    )}
+                  </div>
                 </div>
               </motion.div>
             ))
@@ -459,14 +545,85 @@ const AttendanceRecords = ({ onNavigate }) => {
         </div>
       )}
 
+      {/* Employee Absence Summary */}
+      {employeeAbsents.length > 0 && (
+        <motion.div variants={itemVariants} className="glass-card p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Users size={15} className="text-red-400" />
+            <h2 className="text-sm font-semibold text-white">Employee Absence Summary</h2>
+            <span className="ml-auto text-[10px] text-gray-500">{employeeAbsents.length} employee{employeeAbsents.length > 1 ? 's' : ''} with absences/late</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-white/8 text-gray-500 text-left">
+                  <th className="pb-2 font-medium">Employee</th>
+                  <th className="pb-2 font-medium text-green-400">Present</th>
+                  <th className="pb-2 font-medium text-amber-400">Late</th>
+                  <th className="pb-2 font-medium text-red-400">Absent</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {employeeAbsents.map(e => (
+                  <tr key={e.name + e.department} className="hover:bg-white/3 transition-colors">
+                    <td className="py-2 pr-4">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-600/30 to-purple-600/30 border border-white/8 flex items-center justify-center text-[10px] font-bold text-blue-300 flex-shrink-0">
+                          {e.name.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <p className="text-white font-medium">{e.name}</p>
+                          {e.department && <p className="text-gray-600 text-[10px]">{e.department}</p>}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-2 text-green-400 font-semibold">{e.present}</td>
+                    <td className="py-2">
+                      {e.late > 0
+                        ? <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 font-semibold">{e.late}</span>
+                        : <span className="text-gray-600">0</span>}
+                    </td>
+                    <td className="py-2">
+                      {e.absent > 0
+                        ? <span className="px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 font-semibold">{e.absent}</span>
+                        : <span className="text-gray-600">0</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </motion.div>
+      )}
+
       {/* Confirm Modal */}
       <AnimatePresence>
         {confirmModal && (
           <ConfirmModal
+            title={
+              confirmModal.type === 'absent' ? 'Mark All Absent' :
+              confirmModal.type === 'all'    ? 'Clear All Records' : 'Delete Record'
+            }
             message={
-              confirmModal.type === 'all'
+              confirmModal.type === 'absent'
+                ? 'All registered employees who have not marked attendance today will be recorded as Absent in the database. Continue?'
+                : confirmModal.type === 'all'
                 ? `This will permanently delete all ${records.length} attendance records. This cannot be undone.`
                 : 'This will permanently delete this attendance record.'
+            }
+            confirmLabel={
+              confirmModal.type === 'absent' ? 'Mark Absent' :
+              confirmModal.type === 'all'    ? 'Clear All' : 'Delete'
+            }
+            confirmClass={
+              confirmModal.type === 'absent'
+                ? 'bg-orange-600 hover:bg-orange-500'
+                : 'bg-red-600 hover:bg-red-500'
+            }
+            iconEl={
+              confirmModal.type === 'absent'
+                ? <div className="w-10 h-10 rounded-xl bg-orange-500/20 flex items-center justify-center flex-shrink-0"><UserX size={18} className="text-orange-400" /></div>
+                : <div className="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center flex-shrink-0"><Trash2 size={18} className="text-red-400" /></div>
             }
             onConfirm={confirmDelete}
             onCancel={() => setConfirmModal(null)}

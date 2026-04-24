@@ -4,25 +4,21 @@ import {
   Camera, CheckCircle, AlertCircle, Loader2, Play, Square, Users, Clock, ShieldCheck,
   Zap, RefreshCw, SwitchCamera, ArrowLeft,
 } from 'lucide-react';
+import { kagzsoSpeak } from './KagzsoChat';
 import {
   loadModels, detectFaces, buildFaceMatcher,
   drawDetections, startWebcam, stopWebcam, areModelsLoaded,
 } from '../utils/faceUtils';
 import {
   getRegisteredFaces, markAttendance,
-  isAlreadyMarkedToday, getAttendanceRecords,
+  getAttendanceRecords,
+  checkAttendanceWindow, autoMarkAbsents,
 } from '../utils/storageUtils';
 import {
   isBiometricAvailable, hasFingerprint,
   verifyFingerprint, getUsersWithFingerprint,
 } from '../utils/biometricUtils';
-import {
-  loadVoiceSettings,
-  announceAttendanceMarked,
-  announceAlreadyPresent,
-  announceSystemReady,
-} from '../utils/voiceUtils';
-import VoiceSettings from './VoiceSettings';
+
 
 // ── Fingerprint SVG icon ───────────────────────────────────────────────────
 const FingerprintIcon = ({ size = 20, className = '' }) => (
@@ -66,6 +62,8 @@ const DetectionItem = ({ result, isNew }) => (
         ? 'bg-blue-500/10 border-blue-500/25'
         : result.status === 'recognized'
         ? 'bg-yellow-500/10 border-yellow-500/25'
+        : result.status === 'blocked'
+        ? 'bg-orange-500/10 border-orange-500/25'
         : 'bg-red-500/10 border-red-500/25'
     }`}
   >
@@ -86,9 +84,20 @@ const DetectionItem = ({ result, isNew }) => (
 
     <div>
       {result.status === 'marked' && (
-        <span className="status-recognized">
-          <CheckCircle size={12} /> Marked
-        </span>
+        <div className="flex flex-col items-end gap-1">
+          <span className={result.attendStatus === 'late'
+            ? 'status-badge bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1'
+            : 'status-recognized'}>
+            <CheckCircle size={12} /> {result.attendStatus === 'late' ? 'Late' : 'Marked'}
+          </span>
+          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+            result.punchType === 'out'
+              ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+              : 'bg-green-500/20 text-green-300 border border-green-500/30'
+          }`}>
+            {result.punchType === 'out' ? '↑ OUT' : '↓ IN'}
+          </span>
+        </div>
       )}
       {result.status === 'duplicate' && (
         <span className="status-badge bg-blue-500/20 text-blue-400 border border-blue-500/30">
@@ -117,6 +126,10 @@ const TakeAttendance = ({ onNavigate, role }) => {
   const rafRef    = useRef(null);
   const matcherRef = useRef(null);
   const usersRef   = useRef([]);
+  const spokenRef  = useRef({}); // { userId: lastSpokenMs } — throttle per-person
+  const unknownSpokenRef = useRef(0); // last time unknown was announced
+  // Local cache of user IDs marked present today — avoids per-frame API calls
+  const markedTodayRef = useRef(new Set());
 
   const [modelStatus, setModelStatus] = useState('idle');
   const [modelProgress, setModelProgress] = useState(0);
@@ -136,30 +149,66 @@ const TakeAttendance = ({ onNavigate, role }) => {
   const [fpStatus, setFpStatus] = useState({});
   const [facingMode, setFacingMode] = useState('user'); // 'user' | 'environment'
   const fileInputRef = useRef(null);
+  const [windowBlock, setWindowBlock] = useState({ allowed: true, reason: '', activeWindow: null, justClosedWindow: null });
+  const windowBlockRef = useRef(windowBlock);
+
+  // Re-check time window every minute; auto-mark absent when a window closes
+  useEffect(() => {
+    const tick = async () => {
+      const prev = windowBlockRef.current;
+      const result = await checkAttendanceWindow();
+
+      // Detect window just closed with lateAbsent enabled
+      if (result.justClosedWindow) {
+        const count = await autoMarkAbsents(result.justClosedWindow.label);
+        if (count > 0) {
+          await refreshTodayCount();
+          kagzsoSpeak(`The ${result.justClosedWindow.label} attendance window has closed. ${count} ${count === 1 ? 'person has' : 'people have'} been marked absent.`);
+        }
+      }
+
+      // Announce when window opens
+      if (!prev?.allowed && result.allowed && result.activeWindow) {
+        kagzsoSpeak(`The ${result.activeWindow.label} attendance window is now open. Please mark your attendance.`);
+      }
+
+      setWindowBlock(result);
+      windowBlockRef.current = result;
+    };
+    const id = setInterval(tick, 60000);
+    return () => clearInterval(id);
+  }, []);
 
   // Voice
-  const voiceSettingsRef = useRef(loadVoiceSettings());
 
-  // Refresh today count from storage
-  const refreshTodayCount = useCallback(() => {
-    const today = new Date().toISOString().split('T')[0];
-    const count = getAttendanceRecords().filter(r => r.date === today).length;
-    setTodayCount(count);
+
+  // Refresh today count + populate markedTodayRef from DB
+  const refreshTodayCount = useCallback(async () => {
+    const today   = new Date().toISOString().split('T')[0];
+    const records = await getAttendanceRecords();
+    const todayPresent = records.filter(r => r.date === today && (r.status === 'present' || r.status === 'late'));
+    markedTodayRef.current = new Set(todayPresent.map(r => r.userId));
+    setTodayCount(todayPresent.length);
   }, []);
 
   // Refresh fingerprint-enabled users list
-  const refreshFpUsers = useCallback(() => {
+  const refreshFpUsers = useCallback(async () => {
     const ids = getUsersWithFingerprint();
-    const all = getRegisteredFaces();
+    const all = await getRegisteredFaces();
     setFpUsers(all.filter(u => ids.includes(u.id)));
   }, []);
 
   useEffect(() => {
-    refreshTodayCount();
-    isBiometricAvailable().then(ok => {
+    (async () => {
+      await refreshTodayCount();
+      const firstCheck = await checkAttendanceWindow();
+      setWindowBlock(firstCheck);
+      windowBlockRef.current = firstCheck;
+      
+      const ok = await isBiometricAvailable();
       setBioAvailable(ok);
-      if (ok) refreshFpUsers();
-    });
+      if (ok) await refreshFpUsers();
+    })();
   }, []);
 
   // Load models on mount
@@ -170,7 +219,7 @@ const TakeAttendance = ({ onNavigate, role }) => {
       try {
         await loadModels(pct => setModelProgress(pct));
         setModelStatus('ready');
-        announceSystemReady(voiceSettingsRef.current);
+        kagzsoSpeak("The AI Engine is now ready. You can start the scanner.");
       } catch (err) {
         setModelStatus('error');
         console.error(err);
@@ -179,8 +228,8 @@ const TakeAttendance = ({ onNavigate, role }) => {
   }, []);
 
   // Build / rebuild matcher whenever users change
-  const rebuildMatcher = useCallback(() => {
-    const users = getRegisteredFaces();
+  const rebuildMatcher = useCallback(async () => {
+    const users = await getRegisteredFaces();
     usersRef.current = users;
     matcherRef.current = buildFaceMatcher(users);
   }, []);
@@ -244,9 +293,9 @@ const TakeAttendance = ({ onNavigate, role }) => {
     }
   };
 
-  const startScan = () => {
+  const startScan = async () => {
     if (modelStatus !== 'ready') return;
-    rebuildMatcher();
+    await rebuildMatcher();
     setScanning(true);
     setLiveResults([]);
 
@@ -270,17 +319,30 @@ const TakeAttendance = ({ onNavigate, role }) => {
         );
 
         // Process recognized faces → mark attendance
-        const enriched = results.map(r => {
+        const tsNow = Date.now();
+        const enriched = await Promise.all(results.map(async r => {
+          // Block if outside allowed time window
+          if (!windowBlockRef.current.allowed) {
+            return { ...r, status: 'blocked' };
+          }
           if (r.userId) {
-            const already = isAlreadyMarkedToday(r.userId);
+            const already = markedTodayRef.current.has(r.userId);
             if (!already) {
-              const record = markAttendance(
-                usersRef.current.find(u => u.id === r.userId)
+              const attendStatus = windowBlockRef.current.isLate ? 'late' : 'present';
+              const punchType    = windowBlockRef.current.windowType || 'in';
+              const record = await markAttendance(
+                usersRef.current.find(u => u.id === r.userId),
+                attendStatus,
+                punchType
               );
               if (record) {
+                markedTodayRef.current.add(r.userId);
+                setTodayCount(markedTodayRef.current.size);
                 const entry = {
                   ...r,
                   status: 'marked',
+                  attendStatus,
+                  punchType,
                   time: record.time,
                   id: record.id,
                 };
@@ -288,15 +350,33 @@ const TakeAttendance = ({ onNavigate, role }) => {
                   if (prev.find(p => p.userId === r.userId)) return prev;
                   return [entry, ...prev].slice(0, 30);
                 });
-                refreshTodayCount();
-                announceAttendanceMarked(r.name, voiceSettingsRef.current);
+                // Speak once per person — no repeat within 60s
+                if (!spokenRef.current[r.userId] || tsNow - spokenRef.current[r.userId] > 60000) {
+                  spokenRef.current[r.userId] = tsNow;
+                  const hour = new Date().getHours();
+                  const g = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+                  const msg = attendStatus === 'late'
+                    ? `${g}, ${r.name}. Your attendance has been marked as late.`
+                    : `${g}, ${r.name}. Your attendance has been marked successfully.`;
+                  kagzsoSpeak(msg);
+                }
                 return entry;
               }
             }
+            // Already marked — announce once per 60s per person
+            if (!spokenRef.current[`dup_${r.userId}`] || tsNow - spokenRef.current[`dup_${r.userId}`] > 60000) {
+              spokenRef.current[`dup_${r.userId}`] = tsNow;
+              kagzsoSpeak(`${r.name}, you are already marked present today.`);
+            }
             return { ...r, status: 'duplicate' };
           }
+          // Unknown face — announce once per 15s
+          if (!unknownSpokenRef.current || tsNow - unknownSpokenRef.current > 15000) {
+            unknownSpokenRef.current = tsNow;
+            kagzsoSpeak("Unknown face detected. Please register to take attendance.");
+          }
           return { ...r, status: 'unknown' };
-        });
+        }));
 
         setLiveResults(enriched);
 
@@ -320,21 +400,29 @@ const TakeAttendance = ({ onNavigate, role }) => {
 
   // Mark attendance via fingerprint for a specific user
   const handleFingerprintAttendance = async (user) => {
+    const win = await checkAttendanceWindow();
+    if (!win.allowed) {
+      kagzsoSpeak(`Sorry ${user.name}, attendance is not open right now. ${win.reason}`);
+      return;
+    }
     setFpStatus(s => ({ ...s, [user.id]: 'scanning' }));
     try {
       await verifyFingerprint(user.id);
-      if (isAlreadyMarkedToday(user.id)) {
+      if (markedTodayRef.current.has(user.id)) {
         setFpStatus(s => ({ ...s, [user.id]: 'duplicate' }));
-        announceAlreadyPresent(user.name, voiceSettingsRef.current);
+        kagzsoSpeak(`${user.name}, you have already been marked present today.`);
       } else {
-        const record = markAttendance(user);
+        const record = await markAttendance(user);
         if (record) {
+          markedTodayRef.current.add(user.id);
+          setTodayCount(markedTodayRef.current.size);
           setDetectionLog(prev => [
             { ...user, status: 'marked', time: record.time, id: record.id },
             ...prev,
           ].slice(0, 30));
-          refreshTodayCount();
-          announceAttendanceMarked(user.name, voiceSettingsRef.current);
+          const hour = new Date().getHours();
+          const g = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+          kagzsoSpeak(`${g}, ${user.name}. Your attendance is recorded.`);
           setFpStatus(s => ({ ...s, [user.id]: 'success' }));
         }
       }
@@ -384,9 +472,42 @@ const TakeAttendance = ({ onNavigate, role }) => {
               {fps} FPS
             </div>
           )}
-          <VoiceSettings onSettingsChange={s => { voiceSettingsRef.current = s; }} />
+
         </div>
       </motion.div>
+
+      {/* ── Time Window Banner ────────────────────────────────────────── */}
+      <AnimatePresence>
+        {!windowBlock.allowed && (
+          <motion.div
+            key="win-block"
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="flex items-start gap-3 p-4 rounded-xl bg-orange-500/10 border border-orange-500/25"
+          >
+            <Clock size={16} className="text-orange-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-orange-300">Attendance Window Closed</p>
+              <p className="text-xs text-orange-400/80 mt-0.5">{windowBlock.reason}</p>
+            </div>
+          </motion.div>
+        )}
+        {windowBlock.allowed && windowBlock.activeWindow && (
+          <motion.div
+            key="win-open"
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="flex items-center gap-3 p-3 rounded-xl bg-green-500/8 border border-green-500/20"
+          >
+            <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse flex-shrink-0" />
+            <p className="text-xs text-green-400 font-medium">
+              {windowBlock.activeWindow.label} window open — attendance accepted
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ── Mode Tabs ─────────────────────────────────────────────────── */}
       {bioAvailable && (
@@ -623,7 +744,7 @@ const TakeAttendance = ({ onNavigate, role }) => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {fpUsers.map(user => {
                   const st = fpStatus[user.id] || 'idle';
-                  const alreadyDone = isAlreadyMarkedToday(user.id);
+                  const alreadyDone = markedTodayRef.current.has(user.id);
                   return (
                     <motion.button key={user.id}
                       whileHover={st === 'idle' ? { scale: 1.02 } : {}}

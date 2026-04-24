@@ -1,12 +1,13 @@
 import { useState, Suspense, lazy, useEffect, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  LayoutDashboard, UserPlus, Camera, ClipboardList, Menu, ArrowLeft, LogOut
+  LayoutDashboard, UserPlus, Camera, ClipboardList, Menu, ArrowLeft, LogOut, Building2
 } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import LoginPage from './components/LoginPage';
 import PageTransitionLoader from './components/PageTransitionLoader';
-import AmeliaChat, { ameliaSpeak } from './components/AmeliaChat';
+import KagzsoChat, { kagzsoSpeak } from './components/KagzsoChat';
+import { TenantProvider, useTenant } from './context/TenantContext';
 
 // Lazy load pages
 const Dashboard         = lazy(() => import('./components/Dashboard'));
@@ -42,7 +43,6 @@ const USER_NAV = [
   { id: 'attendance', label: 'Attendance', icon: Camera },
 ];
 
-// Page transition variants
 const pageVariants = {
   initial: { opacity: 0, scale: 0.97, filter: 'blur(4px)' },
   animate: { opacity: 1, scale: 1,    filter: 'blur(0px)',
@@ -57,7 +57,6 @@ const PageLoader = () => (
   </div>
 );
 
-// ── Bottom nav (mobile only) ────────────────────────────────────────────────
 const BottomNav = ({ role, currentPage, onNavigate }) => {
   const items = role === 'admin' ? ADMIN_NAV : USER_NAV;
   return (
@@ -84,24 +83,26 @@ const BottomNav = ({ role, currentPage, onNavigate }) => {
   );
 };
 
-const App = () => {
+// ── Inner app (has access to TenantContext) ───────────────────────────────────
+const AppInner = () => {
+  const { tenant, saveTenant, clearTenant } = useTenant();
   const [role, setRole]                 = useState(null);
   const [currentPage, setCurrentPage]   = useState('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen]     = useState(false);
   const [transitioning, setTransitioning] = useState(false);
+  const [loginKey, setLoginKey] = useState(0);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [time, setTime]                 = useState(
     new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
   );
 
-  // Live clock
   useEffect(() => {
     const t = setInterval(() =>
       setTime(new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })), 30000);
     return () => clearInterval(t);
   }, []);
 
-  // Auto-collapse sidebar on small screens
   useEffect(() => {
     const check = () => {
       if (window.innerWidth < 1024) setSidebarCollapsed(true);
@@ -112,35 +113,44 @@ const App = () => {
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  // Close drawer on resize to desktop
   useEffect(() => {
     const check = () => { if (window.innerWidth >= 768) setDrawerOpen(false); };
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
   }, []);
 
+  // Restore session (role + tenant)
   useEffect(() => {
     const saved = sessionStorage.getItem('fa_role');
-    if (saved) { setRole(saved); setCurrentPage(ROLE_DEFAULT[saved] || 'attendance'); }
-  }, []);
+    if (saved && tenant) {
+      setRole(saved);
+      setCurrentPage(ROLE_DEFAULT[saved] || 'attendance');
+    }
+  }, [tenant]);
 
-  const handleLogin = (r) => {
+  const handleLogin = (r, t) => {
+    saveTenant(t);
     sessionStorage.setItem('fa_role', r);
     setRole(r);
     setCurrentPage(ROLE_DEFAULT[r]);
     const hour = new Date().getHours();
     const g = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-    ameliaSpeak(r === 'admin'
+    kagzsoSpeak(r === 'admin'
       ? `${g}! Welcome back, Admin. Kagzso dashboard is ready.`
       : `${g}! Welcome. Please proceed to mark your attendance.`
     );
   };
 
-  const handleLogout = () => {
-    ameliaSpeak('Goodbye! Have a great day. See you next time.');
+  const handleLogout = () => setShowLogoutConfirm(true);
+
+  const confirmLogout = () => {
+    setShowLogoutConfirm(false);
+    kagzsoSpeak('Goodbye! Have a great day. See you next time.');
     setTimeout(() => {
       sessionStorage.removeItem('fa_role');
+      clearTenant();
       setRole(null);
+      setLoginKey(k => k + 1); // force LoginPage remount at step 'org'
     }, 600);
   };
 
@@ -154,7 +164,7 @@ const App = () => {
       attendance:'Opening Take Attendance.',
       records:   'Opening Attendance Records.',
     };
-    ameliaSpeak(labels[page] || '');
+    kagzsoSpeak(labels[page] || '');
     setTimeout(() => { setCurrentPage(page); setTransitioning(false); }, 340);
   }, [currentPage]);
 
@@ -165,16 +175,15 @@ const App = () => {
   return (
     <div className="flex h-[100dvh] overflow-hidden bg-dark-900">
 
-      {/* Ambient background */}
       <div className="fixed inset-0 pointer-events-none -z-10">
         <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-600/5 rounded-full blur-3xl" />
         <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-purple-600/5 rounded-full blur-3xl" />
       </div>
 
-      {/* Login gate */}
+      {/* Login gate — loginKey forces full remount on logout so step resets to 'org' */}
       <AnimatePresence mode="wait">
         {!role && (
-          <motion.div key="login" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+          <motion.div key={`login-${loginKey}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }}
             exit={{ opacity: 0, scale: 0.97, filter: 'blur(6px)' }}
             transition={{ duration: 0.4 }} className="absolute inset-0 z-50">
             <LoginPage onLogin={handleLogin} />
@@ -182,14 +191,12 @@ const App = () => {
         )}
       </AnimatePresence>
 
-      {/* 3D transition overlay */}
       <AnimatePresence>
         {transitioning && <PageTransitionLoader key="loader" />}
       </AnimatePresence>
 
       {role && (
         <>
-          {/* ── Mobile drawer backdrop ── */}
           <AnimatePresence>
             {drawerOpen && (
               <motion.div key="backdrop"
@@ -201,7 +208,6 @@ const App = () => {
             )}
           </AnimatePresence>
 
-          {/* ── Sidebar (desktop: push | mobile: drawer) ── */}
           <div className={`
             hidden md:flex
             ${sidebarCollapsed ? 'w-[72px]' : 'w-[260px]'}
@@ -213,7 +219,6 @@ const App = () => {
               role={role} onLogout={handleLogout} />
           </div>
 
-          {/* Mobile drawer */}
           <AnimatePresence>
             {drawerOpen && (
               <motion.div key="drawer"
@@ -230,7 +235,6 @@ const App = () => {
             )}
           </AnimatePresence>
 
-          {/* ── Main content ── */}
           <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
             {/* Top bar */}
@@ -238,7 +242,6 @@ const App = () => {
                             px-3 sm:px-6 py-3 sm:py-4
                             border-b border-white/8 bg-dark-800/50 backdrop-blur-xl flex-shrink-0">
               <div className="flex items-center gap-2 sm:gap-3">
-                {/* Hamburger — mobile only */}
                 <motion.button onClick={() => setDrawerOpen(true)}
                   whileTap={{ scale: 0.92 }}
                   className="md:hidden p-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-400
@@ -246,7 +249,6 @@ const App = () => {
                   <Menu size={18} />
                 </motion.button>
 
-                {/* Back button — show when not on default home page */}
                 <AnimatePresence>
                   {safePage !== ROLE_DEFAULT[role] && role && (
                     <motion.button
@@ -268,24 +270,28 @@ const App = () => {
                   )}
                 </AnimatePresence>
 
-                {/* Breadcrumb */}
+                {/* Breadcrumb + tenant name */}
                 <div className="flex items-center gap-1.5 sm:gap-2 text-xs text-gray-500 min-w-0">
-                  <span className="text-gray-600 hidden sm:block truncate">Kagzso</span>
-                  <span className="text-gray-700 hidden sm:block">/</span>
+                  {tenant && (
+                    <>
+                      <Building2 size={12} className="text-gray-600 hidden sm:block flex-shrink-0" />
+                      <span className="text-gray-600 hidden sm:block truncate max-w-[100px]">{tenant.name}</span>
+                      <span className="text-gray-700 hidden sm:block">/</span>
+                    </>
+                  )}
                   <span className="text-gray-200 font-medium truncate">{PAGE_LABELS[safePage] || safePage}</span>
                 </div>
               </div>
 
               <div className="flex items-center gap-2 sm:gap-3">
                 <span className="hidden sm:block text-xs text-gray-500 mr-2">{time}</span>
-                
-                {/* Quick Logout Button */}
-                <motion.button 
-                  whileHover={{ scale: 1.05 }} 
+
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={handleLogout}
                   title="Logout"
-                  className="p-2 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 
+                  className="p-2 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400
                              hover:bg-red-500/20 hover:border-red-500/30 transition-all flex items-center gap-2"
                 >
                   <LogOut size={16} />
@@ -303,7 +309,6 @@ const App = () => {
               </div>
             </div>
 
-            {/* Page content */}
             <div className="flex-1 overflow-hidden flex flex-col pb-16 md:pb-0">
               <AnimatePresence mode="wait">
                 <motion.div key={safePage} variants={pageVariants}
@@ -318,15 +323,74 @@ const App = () => {
             </div>
           </main>
 
-          {/* ── Bottom nav (mobile) ── */}
           <BottomNav role={role} currentPage={safePage} onNavigate={handleNavigate} />
+          <KagzsoChat />
 
-          {/* ── Amelia AI Chat ── */}
-          <AmeliaChat />
+          {/* ── Logout confirmation modal ── */}
+          <AnimatePresence>
+            {showLogoutConfirm && (
+              <motion.div
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+              >
+                <motion.div
+                  initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                  animate={{ scale: 1, opacity: 1, y: 0 }}
+                  exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+                  className="w-full max-w-sm rounded-2xl border border-white/10 bg-dark-800/95 backdrop-blur-xl shadow-2xl overflow-hidden"
+                >
+                  <div className="h-1 w-full bg-gradient-to-r from-red-600 via-red-500 to-orange-500" />
+                  <div className="p-6 space-y-5">
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 rounded-xl bg-red-500/15 border border-red-500/25 flex items-center justify-center flex-shrink-0">
+                        <LogOut size={22} className="text-red-400" />
+                      </div>
+                      <div>
+                        <p className="text-white font-bold text-base">Sign Out?</p>
+                        <p className="text-gray-400 text-sm mt-0.5">You'll be returned to the login page.</p>
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-white/4 border border-white/8 px-4 py-3 flex items-center gap-3">
+                      <div className={`w-2 h-2 rounded-full animate-pulse ${role === 'admin' ? 'bg-blue-400' : 'bg-purple-400'}`} />
+                      <p className="text-xs text-gray-400">
+                        Signed in as <span className={`font-semibold ${role === 'admin' ? 'text-blue-400' : 'text-purple-400'}`}>
+                          {role === 'admin' ? 'Admin' : 'User'}
+                        </span>
+                        {tenant && <> · <span className="text-gray-300">{tenant.name}</span></>}
+                      </p>
+                    </div>
+                    <div className="flex gap-3">
+                      <motion.button
+                        whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
+                        onClick={() => setShowLogoutConfirm(false)}
+                        className="flex-1 py-2.5 rounded-xl bg-white/6 hover:bg-white/12 border border-white/10 text-gray-300 text-sm font-medium transition-all"
+                      >
+                        Cancel
+                      </motion.button>
+                      <motion.button
+                        whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
+                        onClick={confirmLogout}
+                        className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-sm font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-red-500/20"
+                      >
+                        <LogOut size={15} /> Sign Out
+                      </motion.button>
+                    </div>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </>
       )}
     </div>
   );
 };
+
+const App = () => (
+  <TenantProvider>
+    <AppInner />
+  </TenantProvider>
+);
 
 export default App;

@@ -1,196 +1,386 @@
-// ─── Storage Keys ────────────────────────────────────────────────────────────
-const KEYS = {
-  REGISTERED_FACES: 'face_attendance_registered',
-  ATTENDANCE_RECORDS: 'face_attendance_records',
+// ─── Backend base URL ─────────────────────────────────────────────────────────
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
+// ─── Tenant helpers ───────────────────────────────────────────────────────────
+const getTenantId = () => {
+  try {
+    const t = sessionStorage.getItem('fa_tenant');
+    return t ? JSON.parse(t).id : null;
+  } catch { return null; }
 };
 
-// ─── Helper ───────────────────────────────────────────────────────────────────
-const safeGet = (key, fallback) => {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
+export const resolveTenant = async (slug) => {
+  const res = await fetch(`${API_BASE}/tenants/resolve/${encodeURIComponent(slug.trim().toLowerCase())}`);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return body; // { id, name, slug }
 };
 
-const safeSet = (key, value) => {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-    return true;
-  } catch (e) {
-    console.error('Storage error:', e);
-    return false;
-  }
+export const tenantLogin = async (slug, role, password) => {
+  const res = await fetch(`${API_BASE}/tenants/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slug, role, password }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return body.tenant; // { id, name, slug }
 };
+
+export const fetchTenants = async () => {
+  const res = await fetch(`${API_BASE}/tenants`);
+  return res.ok ? res.json() : [];
+};
+
+export const createTenant = async ({ name, slug, admin_pass, user_pass }) => {
+  const res = await fetch(`${API_BASE}/tenants`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, slug, admin_pass, user_pass }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return body;
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const apiFetch = async (path, options = {}) => {
+  const tenantId = getTenantId();
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(tenantId ? { 'X-Tenant-ID': String(tenantId) } : {}),
+    ...(options.headers || {}),
+  };
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+};
+
+// Maps a raw DB user row → shape expected by face-api.js components
+const mapUser = (u) => ({
+  id:          String(u.id),
+  name:        u.name,
+  department:  u.department || '',
+  employee_id: u.employee_id || '',
+  descriptor:  typeof u.face_encoding === 'string'
+                 ? JSON.parse(u.face_encoding)
+                 : u.face_encoding,
+  registeredAt: u.created_at || new Date().toISOString(),
+  avatar:       u.name.charAt(0).toUpperCase(),
+});
+
+// Maps a raw DB attendance row → shape expected by components
+const mapRecord = (r) => ({
+  id:          String(r.id),
+  userId:      String(r.user_id),
+  name:        r.name,
+  department:  r.department || '',
+  employee_id: r.employee_id || '',
+  date:        r.date,
+  time:        r.time,
+  timestamp:   `${r.date}T${r.time}`,
+  status:      r.status,
+  punchType:   r.punch_type || 'in',
+});
 
 // ─── Registered Faces ─────────────────────────────────────────────────────────
 
 /**
- * Returns all registered users.
- * Each entry: { id, name, department, descriptor: number[], registeredAt }
+ * Fetch all registered users from MySQL.
+ * @returns {Promise<object[]>}
  */
-export const getRegisteredFaces = () => safeGet(KEYS.REGISTERED_FACES, []);
+export const getRegisteredFaces = async () => {
+  try {
+    const rows = await apiFetch('/users');
+    return rows.map(mapUser);
+  } catch (err) {
+    console.error('getRegisteredFaces:', err.message);
+    return [];
+  }
+};
 
 /**
- * Saves a new registered face.
- * @param {string} name
- * @param {string} department
- * @param {Float32Array|number[]} descriptor - 128-dim face descriptor
- * @returns {object} saved user record
+ * Register a new user (name + department + 128-d descriptor + optional employee_id).
+ * @returns {Promise<object>} saved user record
  */
-export const saveRegisteredFace = (name, department, descriptor) => {
-  const users = getRegisteredFaces();
-  const newUser = {
-    id: `user_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    name: name.trim(),
-    department: department.trim(),
-    descriptor: Array.from(descriptor),   // Float32Array → plain array for JSON
+export const saveRegisteredFace = async (name, department, descriptor, employee_id) => {
+  const empId = (employee_id || '').trim() || `EMP_${Date.now()}`;
+  const data = await apiFetch('/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      name:          name.trim(),
+      employee_id:   empId,
+      department:    department.trim(),
+      face_encoding: Array.from(descriptor),
+    }),
+  });
+  return {
+    id:          String(data.id),
+    name:        name.trim(),
+    department:  department.trim(),
+    employee_id: empId,
+    descriptor:  Array.from(descriptor),
     registeredAt: new Date().toISOString(),
-    avatar: name.trim().charAt(0).toUpperCase(),
+    avatar:       name.trim().charAt(0).toUpperCase(),
   };
-  users.push(newUser);
-  safeSet(KEYS.REGISTERED_FACES, users);
-  return newUser;
 };
 
 /**
- * Deletes a registered user by id.
+ * Delete a registered user by id.
+ * @returns {Promise<void>}
  */
-export const deleteRegisteredFace = (id) => {
-  const users = getRegisteredFaces().filter(u => u.id !== id);
-  safeSet(KEYS.REGISTERED_FACES, users);
+export const deleteRegisteredFace = async (id) => {
+  await apiFetch(`/users/${id}`, { method: 'DELETE' });
 };
-
-/**
- * Clears all registered faces.
- */
-export const clearRegisteredFaces = () => safeSet(KEYS.REGISTERED_FACES, []);
 
 // ─── Attendance Records ───────────────────────────────────────────────────────
 
 /**
- * Returns all attendance records.
- * Each entry: { id, userId, name, department, date, time, timestamp }
+ * Fetch all attendance records from MySQL.
+ * @returns {Promise<object[]>}
  */
-export const getAttendanceRecords = () => safeGet(KEYS.ATTENDANCE_RECORDS, []);
-
-/**
- * Marks attendance for a recognised user.
- * Returns null if the user already has an entry for today.
- * @param {object} user  - registered user object
- * @returns {object|null} new record or null (duplicate)
- */
-export const markAttendance = (user) => {
-  const records = getAttendanceRecords();
-  const today = new Date().toISOString().split('T')[0];   // "YYYY-MM-DD"
-
-  // Prevent duplicate for same day
-  const alreadyMarked = records.some(
-    r => r.userId === user.id && r.date === today
-  );
-  if (alreadyMarked) return null;
-
-  const now = new Date();
-  const newRecord = {
-    id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    userId: user.id,
-    name: user.name,
-    department: user.department,
-    date: today,
-    time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-    timestamp: now.toISOString(),
-    status: 'present',
-  };
-
-  records.unshift(newRecord);   // newest first
-  safeSet(KEYS.ATTENDANCE_RECORDS, records);
-  return newRecord;
+export const getAttendanceRecords = async () => {
+  try {
+    const rows = await apiFetch('/attendance');
+    return rows.map(mapRecord);
+  } catch (err) {
+    console.error('getAttendanceRecords:', err.message);
+    return [];
+  }
 };
 
 /**
- * Checks if a user has already been marked present today.
+ * Mark attendance for a recognised user.
+ * Returns null if the user is already marked present today.
+ * @param {object} user  - registered user object { id, name, department }
+ * @returns {Promise<object|null>} new record or null (duplicate)
  */
-export const isAlreadyMarkedToday = (userId) => {
-  const today = new Date().toISOString().split('T')[0];
-  return getAttendanceRecords().some(r => r.userId === userId && r.date === today);
+export const markAttendance = async (user, status = 'present', punchType = 'in') => {
+  try {
+    const data = await apiFetch('/attendance', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: user.id, name: user.name, status, punch_type: punchType }),
+    });
+    if (!data.success) return null;
+
+    const now = new Date();
+    return {
+      id:         String(data.id || Date.now()),
+      userId:     String(user.id),
+      name:       user.name,
+      department: user.department || '',
+      date:       now.toISOString().split('T')[0],
+      time:       now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      timestamp:  now.toISOString(),
+      status,
+      punchType,
+    };
+  } catch (err) {
+    console.error('markAttendance:', err.message);
+    return null;
+  }
 };
 
 /**
- * Deletes a single attendance record by id.
+ * Mark a user absent for today.
+ * @returns {Promise<object|null>} new record or null (skipped)
  */
-export const deleteAttendanceRecord = (id) => {
-  const records = getAttendanceRecords().filter(r => r.id !== id);
-  safeSet(KEYS.ATTENDANCE_RECORDS, records);
+export const markAbsent = async (user, windowLabel = '') => {
+  try {
+    const data = await apiFetch('/attendance', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: user.id, name: user.name, status: 'absent' }),
+    });
+    if (!data.success) return null;
+
+    const now = new Date();
+    return {
+      id:          String(data.id || Date.now()),
+      userId:      String(user.id),
+      name:        user.name,
+      department:  user.department || '',
+      date:        now.toISOString().split('T')[0],
+      time:        now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      timestamp:   now.toISOString(),
+      status:      'absent',
+      windowLabel,
+    };
+  } catch (err) {
+    console.error('markAbsent:', err.message);
+    return null;
+  }
 };
 
 /**
- * Clears all attendance records.
+ * Auto-mark all unrecorded users as absent.
+ * Calls the optimized backend endpoint.
+ * @returns {Promise<number>} count of newly-marked absent users
  */
-export const clearAttendanceRecords = () => safeSet(KEYS.ATTENDANCE_RECORDS, []);
+export const autoMarkAbsents = async (windowLabel = '') => {
+  try {
+    const data = await apiFetch('/attendance/auto-absent', { method: 'POST' });
+    return data.count || 0;
+  } catch (err) {
+    console.error('autoMarkAbsents error:', err.message);
+    return 0;
+  }
+};
+
+/**
+ * Delete a single attendance record.
+ * @returns {Promise<void>}
+ */
+export const deleteAttendanceRecord = async (id) => {
+  await apiFetch(`/attendance/${id}`, { method: 'DELETE' });
+};
+
+/**
+ * Clear ALL attendance records.
+ * @returns {Promise<void>}
+ */
+export const clearAttendanceRecords = async () => {
+  await apiFetch('/attendance', { method: 'DELETE' });
+};
 
 // ─── Dashboard Stats ──────────────────────────────────────────────────────────
 
 /**
- * Computes summary statistics for the dashboard.
+ * Compute summary statistics for the dashboard.
+ * @returns {Promise<object>}
  */
-export const getDashboardStats = () => {
-  const users = getRegisteredFaces();
-  const records = getAttendanceRecords();
+export const getDashboardStats = async () => {
+  const [users, records] = await Promise.all([getRegisteredFaces(), getAttendanceRecords()]);
   const today = new Date().toISOString().split('T')[0];
 
-  const todayRecords = records.filter(r => r.date === today);
-  const presentToday = todayRecords.length;
+  const todayRecords    = records.filter(r => r.date === today);
   const totalRegistered = users.length;
-  const absentToday = Math.max(0, totalRegistered - presentToday);
+  const presentIds      = new Set(todayRecords.filter(r => r.status === 'present').map(r => r.userId));
+  const lateIds         = new Set(todayRecords.filter(r => r.status === 'late' && !presentIds.has(r.userId)).map(r => r.userId));
+  const attendedIds     = new Set([...presentIds, ...lateIds]);
+  const presentToday    = presentIds.size;
+  const lateToday       = lateIds.size;
+  const confirmedAbsent = new Set(
+    todayRecords.filter(r => r.status === 'absent' && !attendedIds.has(r.userId)).map(r => r.userId)
+  );
+  const absentToday = confirmedAbsent.size;
+  const notMarked   = Math.max(0, totalRegistered - attendedIds.size - absentToday);
 
-  // Last 7 days unique dates
+  // Last 7 days
   const last7 = {};
   for (let i = 6; i >= 0; i--) {
-    const d = new Date();
+    const d   = new Date();
     d.setDate(d.getDate() - i);
-    const key = d.toISOString().split('T')[0];
-    last7[key] = 0;
+    last7[d.toISOString().split('T')[0]] = 0;
   }
-  records.forEach(r => {
-    if (r.date in last7) last7[r.date]++;
-  });
+  records.forEach(r => { if (r.date in last7) last7[r.date]++; });
 
   return {
     totalRegistered,
     presentToday,
+    lateToday,
     absentToday,
+    notMarked,
     todayRecords,
-    weeklyData: Object.entries(last7).map(([date, count]) => ({ date, count })),
-    recentRecords: records.slice(0, 10),
+    weeklyData:    Object.entries(last7).map(([date, count]) => ({ date, count })),
+    recentRecords: records.filter(r => r.status === 'present').slice(0, 10),
   };
 };
 
-// ─── Export to CSV ────────────────────────────────────────────────────────────
+// ─── Attendance Time Windows (localStorage — config only) ────────────────────
 
-/**
- * Triggers a CSV download of attendance records.
- * @param {object[]} records - filtered records to export
- * @param {string} filename
- */
+const KEYS = { TIME_WINDOWS: 'fa_attendance_windows' };
+
+const safeGet = (key, fallback) => {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+  catch { return fallback; }
+};
+const safeSet = (key, value) => {
+  try { localStorage.setItem(key, JSON.stringify(value)); return true; }
+  catch (e) { console.error('Storage error:', e); return false; }
+};
+
+const DEFAULT_WINDOWS = [
+  { id: 'morning', label: 'Morning', start: '08:00', end: '09:35', enabled: true,  lateAbsent: true,  lateAfter: '08:30', windowType: 'in'  },
+  { id: 'evening', label: 'Evening', start: '16:15', end: '18:00', enabled: true,  lateAbsent: false, lateAfter: '',      windowType: 'out' },
+];
+
+export const getTimeWindows = async () => {
+  try {
+    const rows = await apiFetch('/attendance-windows');
+    return rows.length > 0 ? rows : DEFAULT_WINDOWS;
+  } catch (err) {
+    console.error('getTimeWindows:', err.message);
+    return DEFAULT_WINDOWS;
+  }
+};
+
+export const saveTimeWindows = async (windows) => {
+  try {
+    await apiFetch('/attendance-windows', {
+      method: 'POST',
+      body: JSON.stringify(windows),
+    });
+    return true;
+  } catch (err) {
+    console.error('saveTimeWindows:', err.message);
+    return false;
+  }
+};
+
+const fmtTime = (t) => {
+  const [h, m] = t.split(':').map(Number);
+  const ampm   = h >= 12 ? 'PM' : 'AM';
+  const hr     = h % 12 || 12;
+  return `${hr}:${m.toString().padStart(2, '0')} ${ampm}`;
+};
+
+export const checkAttendanceWindow = async () => {
+  const windows = await getTimeWindows();
+  const active  = windows.filter(w => w.enabled);
+  if (active.length === 0) return { allowed: true, reason: '', activeWindow: null, justClosedWindow: null, isLate: false, windowType: 'in' };
+
+  const now  = new Date();
+  const hhmm = now.getHours() * 60 + now.getMinutes();
+
+  for (const w of active) {
+    const [sh, sm] = w.start.split(':').map(Number);
+    const [eh, em] = w.end.split(':').map(Number);
+    if (hhmm >= sh * 60 + sm && hhmm <= eh * 60 + em) {
+      let isLate = false;
+      if (w.lateAfter) {
+        const [lh, lm] = w.lateAfter.split(':').map(Number);
+        isLate = hhmm > lh * 60 + lm;
+      }
+      return { allowed: true, reason: '', activeWindow: w, justClosedWindow: null, isLate, windowType: w.windowType || 'in' };
+    }
+  }
+
+  let justClosedWindow = null;
+  for (const w of active) {
+    if (!w.lateAbsent) continue;
+    const [eh, em] = w.end.split(':').map(Number);
+    const endMin   = eh * 60 + em;
+    if (hhmm > endMin && hhmm <= endMin + 2) { justClosedWindow = w; break; }
+  }
+
+  const windowList = active.map(w => `${w.label} ${fmtTime(w.start)}–${fmtTime(w.end)}`).join(', ');
+  return { allowed: false, reason: `Attendance is only allowed during: ${windowList}`, activeWindow: null, justClosedWindow, isLate: false, windowType: 'in' };
+};
+
+// ─── Export to CSV (sync — operates on passed-in data) ───────────────────────
+
 export const exportToCSV = (records, filename = 'attendance_records.csv') => {
   if (!records.length) return;
-
   const headers = ['Name', 'Department', 'Date', 'Time', 'Status'];
-  const rows = records.map(r => [
-    `"${r.name}"`,
-    `"${r.department}"`,
-    r.date,
-    `"${r.time}"`,
-    r.status,
-  ]);
-
-  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-
-  const link = document.createElement('a');
-  link.href = url;
+  const rows    = records.map(r => [`"${r.name}"`, `"${r.department}"`, r.date, `"${r.time}"`, r.status]);
+  const csv     = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const blob    = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url     = URL.createObjectURL(blob);
+  const link    = document.createElement('a');
+  link.href     = url;
   link.setAttribute('download', filename);
   document.body.appendChild(link);
   link.click();

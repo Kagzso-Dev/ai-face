@@ -25,7 +25,7 @@ const Sidebar = ({ currentPage, onNavigate, collapsed, onToggleCollapse, role, o
       {/* ── Header ── */}
       <div className="flex items-center gap-3 px-4 py-5 border-b border-white/10">
         <div className="relative flex-shrink-0">
-          <Logo size={36} />
+          <Logo size={collapsed ? 36 : 40} />
           <span className="absolute inset-0 rounded-xl bg-blue-500/20 animate-ping"
             style={{ animationDuration: '2.5s' }} />
         </div>
@@ -36,7 +36,7 @@ const Sidebar = ({ currentPage, onNavigate, collapsed, onToggleCollapse, role, o
               exit={{ opacity: 0, x: -10 }} transition={{ duration: 0.2 }}
               className="flex-1 overflow-hidden">
               <p className="text-white font-bold text-sm leading-tight whitespace-nowrap">Kagzso</p>
-              <p className="text-gray-600 text-xs whitespace-nowrap">Attendance System</p>
+              <p className="text-gray-600 text-[10px] uppercase tracking-widest whitespace-nowrap">Attendance System</p>
             </motion.div>
           )}
         </AnimatePresence>

@@ -22,6 +22,15 @@ export default defineConfig({
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp'
-    }
+    },
+    proxy: {
+      // In dev, forward /api/* → http://localhost:3001/*
+      // e.g. fetch('/api/users') → http://localhost:3001/users
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+    },
   }
 })

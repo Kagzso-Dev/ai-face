@@ -5,7 +5,9 @@ import {
   Clock, Calendar, ChevronRight, Activity,
   RefreshCw, Camera, UserPlus, ClipboardList,
 } from 'lucide-react';
-import { getDashboardStats } from '../utils/storageUtils';
+import { getDashboardStats, autoMarkAbsents } from '../utils/storageUtils';
+import { kagzsoSpeak } from './KagzsoChat';
+import AttendanceTimeSettings from './AttendanceTimeSettings';
 
 // ─── Animation variants ───────────────────────────────────────────────────────
 const containerVariants = {
@@ -115,16 +117,33 @@ const Dashboard = ({ onNavigate }) => {
   const [stats, setStats] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  const refresh = () => {
+  const refresh = async () => {
     setRefreshing(true);
-    setTimeout(() => {
-      setStats(getDashboardStats());
-      setRefreshing(false);
-    }, 400);
+    const s = await getDashboardStats();
+    setStats(s);
+    setRefreshing(false);
+  };
+
+  const handleAutoAbsent = async () => {
+    setRefreshing(true);
+    const count = await autoMarkAbsents();
+    if (count > 0) {
+      kagzsoSpeak(`Auto-marking complete. ${count} users have been marked absent in the database.`);
+      await refresh();
+    } else {
+      kagzsoSpeak("No additional users need to be marked absent today.");
+    }
+    setRefreshing(false);
   };
 
   useEffect(() => {
-    setStats(getDashboardStats());
+    (async () => {
+      const s = await getDashboardStats();
+      setStats(s);
+      setTimeout(() => {
+        kagzsoSpeak(`Dashboard loaded. ${s.presentToday} present, ${s.absentToday} absent, ${s.notMarked} not yet marked today.`);
+      }, 1400);
+    })();
   }, []);
 
   if (!stats) {
@@ -187,7 +206,7 @@ const Dashboard = ({ onNavigate }) => {
           icon={UserX}
           label="Absent Today"
           value={stats.absentToday}
-          sub="Not yet marked"
+          sub={`${stats.notMarked} not yet marked`}
           gradient="from-red-500 to-rose-700"
           glow="bg-gradient-to-br from-red-600/10 to-transparent"
         />
@@ -245,8 +264,37 @@ const Dashboard = ({ onNavigate }) => {
               <ChevronRight size={14} className="text-gray-600 group-hover:text-gray-400 transition-colors" />
             </motion.button>
           ))}
+
+          {/* Bulk Absent action */}
+          {stats.notMarked > 0 && (
+            <motion.button
+              whileHover={{ x: 4 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={handleAutoAbsent}
+              disabled={refreshing}
+              className="w-full flex items-center gap-3 p-3 rounded-xl bg-red-500/5 hover:bg-red-500/10 border border-red-500/10 hover:border-red-500/20 transition-all group mt-2"
+            >
+              <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-red-600 to-orange-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-red-500/20">
+                <UserX size={16} className="text-white" />
+              </div>
+              <div className="text-left flex-1 min-w-0">
+                <p className="text-sm font-medium text-white">Mark Absents</p>
+                <p className="text-xs text-red-400/80">Mark {stats.notMarked} remaining unmarked as absent</p>
+              </div>
+              {refreshing ? (
+                <RefreshCw size={14} className="text-red-500 animate-spin" />
+              ) : (
+                <ChevronRight size={14} className="text-red-900 group-hover:text-red-500 transition-colors" />
+              )}
+            </motion.button>
+          )}
         </motion.div>
       </div>
+
+      {/* ── Attendance Time Windows ── */}
+      <motion.div variants={itemVariants}>
+        <AttendanceTimeSettings />
+      </motion.div>
 
       {/* ── Recent Activity ── */}
       <motion.div variants={itemVariants} className="glass-card p-6">

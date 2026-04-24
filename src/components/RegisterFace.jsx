@@ -3,10 +3,12 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   UserPlus, Camera, CheckCircle, AlertCircle,
   Loader2, RotateCcw, Trash2, User, Building2,
-  ShieldCheck, Eye, EyeOff, ArrowLeft, SwitchCamera, FolderOpen,
+  ShieldCheck, Eye, EyeOff, ArrowLeft, SwitchCamera, FolderOpen, X,
 } from 'lucide-react';
 import { loadModels, captureFaceDescriptor, startWebcam, stopWebcam } from '../utils/faceUtils';
+import { kagzsoSpeak } from './KagzsoChat';
 import { saveRegisteredFace, getRegisteredFaces, deleteRegisteredFace } from '../utils/storageUtils';
+// Note: saveRegisteredFace / getRegisteredFaces / deleteRegisteredFace are async (MySQL API)
 import {
   isBiometricAvailable, hasFingerprint as hasFP,
   registerFingerprint, removeFingerprint,
@@ -99,50 +101,46 @@ const UserCard = ({ user, onDelete, bioAvailable, onRegisterFP, onRemoveFP }) =>
   return (
     <motion.div layout initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.9 }}
-      className="flex items-center gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/8 border border-white/8 hover:border-white/15 transition-all group"
+      className="flex items-center gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/8 border border-white/8 hover:border-white/15 transition-all"
     >
+      {/* Avatar */}
       <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600/40 to-purple-600/40 border border-white/10 flex items-center justify-center text-sm font-bold text-blue-300 flex-shrink-0">
         {user.name.charAt(0).toUpperCase()}
       </div>
+
+      {/* Info */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <p className="text-sm font-semibold text-white truncate">{user.name}</p>
-          {registered && (
-            <span title="Fingerprint registered">
-              <FingerprintIcon size={12} className="text-cyan-400 flex-shrink-0" />
-            </span>
-          )}
+          {registered && <FingerprintIcon size={12} className="text-cyan-400 flex-shrink-0" title="Fingerprint registered" />}
         </div>
         <p className="text-xs text-gray-500 truncate">{user.department}</p>
       </div>
-      <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-        <span className="text-xs text-gray-600">{new Date(user.registeredAt).toLocaleDateString()}</span>
 
-        {/* Fingerprint button */}
+      {/* Always-visible actions */}
+      <div className="flex items-center gap-1.5">
+        {/* Fingerprint button — always visible */}
         {bioAvailable && (
           <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
             onClick={handleFP}
             disabled={fpState === 'working'}
-            title={registered ? 'Remove fingerprint' : 'Register fingerprint'}
-            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
-              fpState === 'done'    ? 'bg-green-500/30 text-green-400' :
-              fpState === 'error'   ? 'bg-red-500/30 text-red-400' :
-              registered            ? 'bg-cyan-500/20 hover:bg-red-500/30 text-cyan-400 hover:text-red-400' :
-                                      'bg-white/10 hover:bg-cyan-500/20 text-gray-500 hover:text-cyan-400'
+            title={registered ? 'Click to remove fingerprint' : 'Click to register fingerprint'}
+            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${
+              fpState === 'done'  ? 'bg-green-500/30 text-green-400' :
+              fpState === 'error' ? 'bg-red-500/30 text-red-400' :
+              registered         ? 'bg-cyan-500/20 hover:bg-red-500/25 border border-cyan-500/30 hover:border-red-500/30 text-cyan-400 hover:text-red-400' :
+                                   'bg-white/8 hover:bg-cyan-500/20 border border-white/10 hover:border-cyan-500/30 text-gray-500 hover:text-cyan-400'
             }`}
           >
-            <motion.div
-              animate={fpState === 'working' ? { opacity: [1, 0.3, 1] } : {}}
-              transition={{ duration: 0.8, repeat: Infinity }}
-            >
-              <FingerprintIcon size={13} />
+            <motion.div animate={fpState === 'working' ? { opacity: [1, 0.3, 1] } : {}} transition={{ duration: 0.8, repeat: Infinity }}>
+              <FingerprintIcon size={14} />
             </motion.div>
           </motion.button>
         )}
 
         <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
           onClick={() => onDelete(user.id)}
-          className="w-7 h-7 rounded-lg bg-red-500/20 hover:bg-red-500/40 flex items-center justify-center text-red-400 transition-colors"
+          className="w-8 h-8 rounded-lg bg-red-500/10 hover:bg-red-500/30 border border-red-500/15 hover:border-red-500/30 flex items-center justify-center text-red-400 transition-all"
           title="Delete registration"
         >
           <Trash2 size={12} />
@@ -163,6 +161,7 @@ const RegisterFace = ({ onNavigate }) => {
   const [camError, setCamError] = useState('');
 
   const [name, setName] = useState('');
+  const [employeeId, setEmployeeId] = useState('');
   const [department, setDepartment] = useState('');
   const [capturing, setCapturing] = useState(false);
   const [statusMsg, setStatusMsg] = useState({ type: '', message: '' });
@@ -172,11 +171,15 @@ const RegisterFace = ({ onNavigate }) => {
   const [registeredUsers, setRegisteredUsers] = useState([]);
   const [showRegistered, setShowRegistered] = useState(true);
   const [bioAvailable, setBioAvailable] = useState(false);
+  const [justRegistered, setJustRegistered] = useState(null); // { id, name } — prompt fingerprint after face
+  const [fpPromptState, setFpPromptState]   = useState('idle'); // idle | working | done | error | skipped
 
   // Load registered users + check biometric support on mount
   useEffect(() => {
-    setRegisteredUsers(getRegisteredFaces());
-    isBiometricAvailable().then(setBioAvailable);
+    (async () => {
+      setRegisteredUsers(await getRegisteredFaces());
+      setBioAvailable(await isBiometricAvailable());
+    })();
   }, []);
 
   // Auto-load models on mount
@@ -260,10 +263,12 @@ const RegisterFace = ({ onNavigate }) => {
         return;
       }
 
-      const user = saveRegisteredFace(name.trim(), department.trim(), descriptor);
-      setRegisteredUsers(getRegisteredFaces());
+      const user = await saveRegisteredFace(name.trim(), department.trim(), descriptor, employeeId.trim());
+      setRegisteredUsers(await getRegisteredFaces());
       setStatusMsg({ type: 'success', message: `Registered ${user.name} from image!` });
+      kagzsoSpeak(`${user.name} has been successfully registered from image.`);
       setName('');
+      setEmployeeId('');
       setDepartment('');
     } catch (err) {
       console.error(err);
@@ -302,11 +307,18 @@ const RegisterFace = ({ onNavigate }) => {
         return;
       }
 
-      const user = saveRegisteredFace(name.trim(), department.trim(), descriptor);
-      setRegisteredUsers(getRegisteredFaces());
-      setStatusMsg({ type: 'success', message: `Successfully registered ${user.name} from ${user.department}!` });
+      const user = await saveRegisteredFace(name.trim(), department.trim(), descriptor, employeeId.trim());
+      setRegisteredUsers(await getRegisteredFaces());
+      setStatusMsg({ type: 'success', message: `Successfully registered ${user.name}!` });
+      kagzsoSpeak(`${user.name} from ${user.department} has been registered successfully.`);
       setName('');
+      setEmployeeId('');
       setDepartment('');
+      // Offer fingerprint registration if biometric is available
+      if (bioAvailable) {
+        setJustRegistered({ id: user.id, name: user.name });
+        setFpPromptState('idle');
+      }
     } catch (err) {
       console.error(err);
       setStatusMsg({ type: 'error', message: `Registration failed: ${err.message}` });
@@ -315,9 +327,26 @@ const RegisterFace = ({ onNavigate }) => {
     }
   };
 
-  const handleDelete = (id) => {
-    deleteRegisteredFace(id);
-    setRegisteredUsers(getRegisteredFaces());
+  // Fingerprint registration for the newly-registered user
+  const handleFpPrompt = async () => {
+    if (!justRegistered) return;
+    setFpPromptState('working');
+    try {
+      await registerFingerprint(justRegistered.id, justRegistered.name);
+      setFpPromptState('done');
+      kagzsoSpeak(`Fingerprint registered for ${justRegistered.name}.`);
+      setRegisteredUsers(await getRegisteredFaces());
+      setTimeout(() => { setJustRegistered(null); setFpPromptState('idle'); }, 2000);
+    } catch {
+      setFpPromptState('error');
+    }
+  };
+
+  const handleDelete = async (id) => {
+    const user = registeredUsers.find(u => u.id === id);
+    await deleteRegisteredFace(id);
+    setRegisteredUsers(await getRegisteredFaces());
+    if (user) kagzsoSpeak(`${user.name} has been removed from the system.`);
   };
 
   return (
@@ -393,6 +422,20 @@ const RegisterFace = ({ onNavigate }) => {
                 value={name}
                 onChange={e => setName(e.target.value)}
                 placeholder="e.g. Alice Johnson"
+                className="input-field"
+                disabled={capturing}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
+                <User size={12} /> Employee ID
+              </label>
+              <input
+                type="text"
+                value={employeeId}
+                onChange={e => setEmployeeId(e.target.value)}
+                placeholder="e.g. EMP001 (auto-generated if blank)"
                 className="input-field"
                 disabled={capturing}
               />
@@ -538,6 +581,73 @@ const RegisterFace = ({ onNavigate }) => {
               )}
             </div>
           </motion.div>
+
+          {/* ── Fingerprint prompt after face registration ──────────── */}
+          <AnimatePresence>
+            {justRegistered && bioAvailable && (
+              <motion.div
+                initial={{ opacity: 0, y: 12, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                className="glass-card p-5 border border-cyan-500/25 bg-cyan-500/5"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center flex-shrink-0">
+                    <FingerprintIcon size={20} className="text-cyan-400" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-white font-semibold text-sm">Register Fingerprint?</p>
+                    <p className="text-gray-400 text-xs mt-0.5">
+                      <span className="text-cyan-300 font-medium">{justRegistered.name}</span> was registered successfully.
+                      Add a fingerprint now for faster attendance.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => { setJustRegistered(null); setFpPromptState('idle'); }}
+                    className="text-gray-600 hover:text-gray-400 transition-colors flex-shrink-0"
+                    title="Skip"
+                  ><X size={15} /></button>
+                </div>
+
+                <div className="flex gap-2 mt-4">
+                  <motion.button
+                    whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
+                    onClick={handleFpPrompt}
+                    disabled={fpPromptState === 'working' || fpPromptState === 'done'}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                      fpPromptState === 'done'    ? 'bg-green-500/25 border border-green-500/30 text-green-400' :
+                      fpPromptState === 'error'   ? 'bg-red-500/20 border border-red-500/30 text-red-400' :
+                      fpPromptState === 'working' ? 'bg-cyan-500/15 border border-cyan-500/25 text-cyan-400' :
+                                                    'bg-cyan-600 hover:bg-cyan-500 text-white'
+                    }`}
+                  >
+                    {fpPromptState === 'working' && <motion.div animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 0.8, repeat: Infinity }}><FingerprintIcon size={16} /></motion.div>}
+                    {fpPromptState === 'done'    && <CheckCircle size={16} />}
+                    {fpPromptState === 'error'   && <AlertCircle size={16} />}
+                    {fpPromptState === 'idle'    && <FingerprintIcon size={16} />}
+                    {fpPromptState === 'working' ? 'Scanning fingerprint…' :
+                     fpPromptState === 'done'    ? 'Fingerprint registered!' :
+                     fpPromptState === 'error'   ? 'Failed — try again' :
+                                                   'Register Fingerprint'}
+                  </motion.button>
+                  {fpPromptState !== 'done' && (
+                    <motion.button
+                      whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
+                      onClick={() => { setJustRegistered(null); setFpPromptState('idle'); }}
+                      className="px-4 py-2.5 rounded-xl btn-secondary text-sm"
+                    >
+                      Skip
+                    </motion.button>
+                  )}
+                </div>
+                {fpPromptState === 'error' && (
+                  <p className="text-red-400/80 text-xs mt-2 text-center">
+                    Biometric prompt was cancelled or failed. You can register it later from the user list.
+                  </p>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* ── Right: Registered users list ─────────────────────────── */}
@@ -575,8 +685,8 @@ const RegisterFace = ({ onNavigate }) => {
                     {registeredUsers.map(user => (
                       <UserCard key={user.id} user={user} onDelete={handleDelete}
                         bioAvailable={bioAvailable}
-                        onRegisterFP={() => setRegisteredUsers(getRegisteredFaces())}
-                        onRemoveFP={() => setRegisteredUsers(getRegisteredFaces())}
+                        onRegisterFP={() => getRegisteredFaces().then(setRegisteredUsers)}
+                        onRemoveFP={() => getRegisteredFaces().then(setRegisteredUsers)}
                       />
                     ))}
                   </AnimatePresence>

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mysql -h localhost -P 3306 -u root -pRagul@2004 attendance_system -e ' *)",
+      "Bash(where mysql *)",
+      "Read(//c/Program Files/MySQL/**)",
+      "Read(//c/xampp/mysql/**)",
+      "Read(//c/wamp64/bin/**)",
+      "Bash('C:/Program Files/MySQL/MySQL Server 8.0/bin/mysql.exe' -h localhost -P 3306 -u root -pRagul@2004 attendance_system -e ' *)",
+      "Bash(\"C:/Program Files/MySQL/MySQL Server 8.0/bin/mysql.exe\" -h localhost -P 3306 -u root -pRagul@2004 attendance_system -e \"SHOW COLUMNS FROM attendance; SHOW COLUMNS FROM attendance_windows;\")"
+    ]
+  }
+}
